@@ -917,7 +917,7 @@ function tryBlowCandles() {
 // ring just outside the candles.
 function addCakesToScene(targetScene) {
   if (!CAKES || !CAKES.glb) return;
-  new GLTFLoader().load(
+  loadGLBWithRetry(
     CAKES.glb,
     (gltf) => {
       const master = gltf.scene;
@@ -960,10 +960,7 @@ function addCakesToScene(targetScene) {
         placeCake(CAKES.centerCakeTargetWidth, CAKES.center.x, CAKES.center.z);
       }
     },
-    undefined,
-    (err) => {
-      console.error("[addCakesToScene] FAILED to load:", CAKES.glb, err);
-    }
+    { label: "the cakes" }
   );
 }
 
@@ -1448,13 +1445,84 @@ function applyGLTFMaterialFixes(root) {
   });
 }
 
+// ------------------------------------------------------------
+// GLB loading with automatic retry + a visible failure message. Every
+// model load in this file goes through this instead of a bare
+// `new GLTFLoader().load(...)` — a flaky connection dropping one of these
+// (some are 30-60MB+) used to fail completely silently (nothing but a
+// console.error), leaving her stuck looking at an empty gym/campus/etc.
+// with zero indication anything went wrong.
+//
+// This is deliberately "fail proof": it NEVER just gives up. A failed
+// attempt (including one that silently hangs/stalls rather than erroring —
+// GLTFLoader has no built-in timeout, so a dead connection can otherwise
+// just sit there forever with no error to catch) is retried automatically
+// forever, with a short, fast-ramping delay between tries so it recovers
+// quickly from a dropped connection. This is entirely silent from her
+// perspective — no banner, no visible error state, ever. It just keeps
+// retrying in the background until it succeeds, and the level-transition
+// loading screen is held long enough (see runLevelTransition) to cover
+// the retries in the vast majority of cases.
+// ------------------------------------------------------------
+function loadGLBWithRetry(
+  url,
+  onSuccess,
+  { label, retryDelayMs = 600, maxDelayMs = 4000, attemptTimeoutMs = 12000 } = {}
+) {
+  const niceLabel = label || url;
+  let attempt = 0;
+
+  function attemptLoad() {
+    attempt += 1;
+    let settled = false;
+
+    // GLTFLoader has no built-in timeout — a dropped/stalled connection can
+    // just hang with no error ever firing. This forces a retry after
+    // attemptTimeoutMs even if nothing "failed" in the traditional sense.
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      handleFailure(new Error(`timed out after ${attemptTimeoutMs}ms`));
+    }, attemptTimeoutMs);
+
+    new GLTFLoader().load(
+      url,
+      (gltf) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        onSuccess(gltf);
+      },
+      undefined,
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        handleFailure(err);
+      }
+    );
+  }
+
+  function handleFailure(err) {
+    console.error(`[loadGLBWithRetry] failed to load ${niceLabel} (attempt ${attempt}):`, err);
+    // Fast, capped backoff with jitter — no visible sign of this to the
+    // user, and no upper bound on attempt count. It just quietly keeps
+    // trying until it works.
+    const jitter = 0.85 + Math.random() * 0.3;
+    const delay = Math.min(retryDelayMs * attempt, maxDelayMs) * jitter;
+    setTimeout(attemptLoad, delay);
+  }
+
+  attemptLoad();
+}
+
 // Loads a character GLB and swaps it in as the currently-visible player
 // mesh — used for the initial café outfit and again for the gym outfit
 // once level 2 unlocks.
 function loadPlayerModel(modelConfig) {
   if (!modelConfig || !modelConfig.glb) return;
   console.log("[loadPlayerModel] requesting:", modelConfig.glb);
-  new GLTFLoader().load(
+  loadGLBWithRetry(
     modelConfig.glb,
     (gltf) => {
       const obj = gltf.scene;
@@ -1479,11 +1547,7 @@ function loadPlayerModel(modelConfig) {
         scale
       );
     },
-    undefined,
-    (err) => {
-      console.error("[loadPlayerModel] FAILED to load:", modelConfig.glb, err);
-      /* keep whatever mesh is currently showing on error */
-    }
+    { label: "her outfit" }
   );
 }
 
@@ -1638,7 +1702,7 @@ function addGymCoverPanels(obj) {
 }
 
 if (CAFE && CAFE.glb) {
-  new GLTFLoader().load(
+  loadGLBWithRetry(
     CAFE.glb,
     (gltf) => {
       const cafeObj = gltf.scene;
@@ -1672,10 +1736,7 @@ if (CAFE && CAFE.glb) {
       cafeLight.position.set(CAFE.position.x, 4, CAFE.position.z);
       sceneLevel1.add(cafeLight);
     },
-    undefined,
-    () => {
-      /* if this fails, the world just won't have the cafe in it */
-    }
+    { label: "the café" }
   );
 }
 
@@ -1694,97 +1755,99 @@ if (CAFE_BANNER && CAFE_BANNER.image) {
 }
 
 // ------------------------------------------------------------
-// Gym environment (level 2) — loaded up front so the model's ready to go,
-// but built directly into sceneLevel2 (its own, completely separate
-// scene), so it's simply never part of what's rendered until the level
-// 1 -> 2 transition switches currentScene over to it.
-// ------------------------------------------------------------
-if (GYM && GYM.glb) {
-  new GLTFLoader().load(
-    GYM.glb,
-    (gltf) => {
-      const gymObj = gltf.scene;
-      applyGLTFMaterialFixes(gymObj);
-
-      autoFitAndPlace(gymObj, {
-        targetWidth: GYM.targetWidth,
-        position: GYM.position,
-        rotationY: GYM.rotationY,
-        excludeNames: GYM.excludeNodeNames || [],
-      });
-
-      // The scanned gym model only looks right from the front (brick
-      // facade) — the sides/top/back are broken/stretched geometry, so we
-      // just cover them with flat panels tinted to match the front brick
-      // color (sampled from the model's own diffuse texture).
-      const gymCover = addGymCoverPanels(gymObj);
-
-      const gymLight = new THREE.PointLight(0xfff0e0, 16, 50, 2);
-      gymLight.position.set(GYM.position.x, 10, GYM.position.z);
-
-      sceneLevel2.add(gymObj);
-      sceneLevel2.add(gymCover);
-      sceneLevel2.add(gymLight);
-      registerColliderFromObject(sceneLevel2, gymObj, { excludeNames: GYM.excludeNodeNames || [] });
-    },
-    undefined,
-    () => {
-      /* if this fails, the world just won't have the gym in it */
-    }
-  );
-}
-
-// ------------------------------------------------------------
-// "Jon" (level 2 bonus) — a giant version of him, loaded into sceneLevel2
-// down the street from the gym but kept invisible until the strength bar
-// maxes out (see revealJon(), triggered from updateMachines()). Not a
-// separate level — this is a bonus beat inside level 2's own scene.
+// Gym environment (level 2) + "Jon" (level 2 bonus, a giant version of him
+// down the street kept invisible until the strength bar maxes out — see
+// revealJon(), triggered from updateMachines()).
+//
+// Both are LAZILY loaded — only fetched the moment the level 1 -> 2
+// transition actually starts (see loadLevel2Assets(), called from
+// startLevel2() below) — instead of upfront at page load alongside every
+// other level's assets. Loading every level's models (gym.glb alone is
+// ~63MB, plus jon/loyola/etc.) all at once on page load was overwhelming
+// mobile browsers' WebGL memory limits — that's what was causing the
+// player model to sometimes not even render, and everything (including
+// the touch Interact button) to appear "broken" on phones.
 // ------------------------------------------------------------
 let jonGroupRef = null;
 let jonObjRef = null;
 let jonMaterials = [];
+let level2AssetsRequested = false;
 
-if (JON && JON.glb) {
-  new GLTFLoader().load(
-    JON.glb,
-    (gltf) => {
-      const jonObj = gltf.scene;
-      applyGLTFMaterialFixes(jonObj);
+function loadLevel2Assets() {
+  if (level2AssetsRequested) return;
+  level2AssetsRequested = true;
 
-      // Placed at LOCAL origin (not JON.position) — the wrapping jonGroup
-      // below carries JON.position instead. This matters for the "shrink
-      // in place" hit effect: scaling a group multiplies its children's
-      // local positions too, so if jonObj's own position held JON.position
-      // directly, shrinking the group would drag him toward world (0,0,0)
-      // with every hit instead of shrinking him around his own feet.
-      autoFitAndPlace(jonObj, {
-        targetHeight: JON.targetHeight,
-        position: { x: 0, y: 0, z: 0 },
-        rotationY: JON.rotationY,
-        excludeNames: JON.excludeNodeNames || [],
-      });
+  if (GYM && GYM.glb) {
+    loadGLBWithRetry(
+      GYM.glb,
+      (gltf) => {
+        const gymObj = gltf.scene;
+        applyGLTFMaterialFixes(gymObj);
 
-      jonObj.traverse((child) => {
-        if (child.isMesh && child.material) jonMaterials.push(child.material);
-      });
+        autoFitAndPlace(gymObj, {
+          targetWidth: GYM.targetWidth,
+          position: GYM.position,
+          rotationY: GYM.rotationY,
+          excludeNames: GYM.excludeNodeNames || [],
+        });
 
-      const jonLight = new THREE.PointLight(0xfff0e0, 18, 40, 2);
-      jonLight.position.set(0, 14, 0); // local — the group's own position below places him in the world
+        // The scanned gym model only looks right from the front (brick
+        // facade) — the sides/top/back are broken/stretched geometry, so we
+        // just cover them with flat panels tinted to match the front brick
+        // color (sampled from the model's own diffuse texture).
+        const gymCover = addGymCoverPanels(gymObj);
 
-      const jonGroup = new THREE.Group();
-      jonGroup.position.set(JON.position.x, JON.position.y || 0, JON.position.z);
-      jonGroup.add(jonObj);
-      jonGroup.add(jonLight);
-      jonGroup.visible = false; // stays hidden until she maxes out the strength bar
-      sceneLevel2.add(jonGroup);
-      jonGroupRef = jonGroup;
-      jonObjRef = jonObj;
-    },
-    undefined,
-    () => {
-      /* if this fails, the bonus beat just won't have anything to destroy */
-    }
-  );
+        const gymLight = new THREE.PointLight(0xfff0e0, 16, 50, 2);
+        gymLight.position.set(GYM.position.x, 10, GYM.position.z);
+
+        sceneLevel2.add(gymObj);
+        sceneLevel2.add(gymCover);
+        sceneLevel2.add(gymLight);
+        registerColliderFromObject(sceneLevel2, gymObj, { excludeNames: GYM.excludeNodeNames || [] });
+      },
+      { label: "the gym" }
+    );
+  }
+
+  if (JON && JON.glb) {
+    loadGLBWithRetry(
+      JON.glb,
+      (gltf) => {
+        const jonObj = gltf.scene;
+        applyGLTFMaterialFixes(jonObj);
+
+        // Placed at LOCAL origin (not JON.position) — the wrapping jonGroup
+        // below carries JON.position instead. This matters for the "shrink
+        // in place" hit effect: scaling a group multiplies its children's
+        // local positions too, so if jonObj's own position held JON.position
+        // directly, shrinking the group would drag him toward world (0,0,0)
+        // with every hit instead of shrinking him around his own feet.
+        autoFitAndPlace(jonObj, {
+          targetHeight: JON.targetHeight,
+          position: { x: 0, y: 0, z: 0 },
+          rotationY: JON.rotationY,
+          excludeNames: JON.excludeNodeNames || [],
+        });
+
+        jonObj.traverse((child) => {
+          if (child.isMesh && child.material) jonMaterials.push(child.material);
+        });
+
+        const jonLight = new THREE.PointLight(0xfff0e0, 18, 40, 2);
+        jonLight.position.set(0, 14, 0); // local — the group's own position below places him in the world
+
+        const jonGroup = new THREE.Group();
+        jonGroup.position.set(JON.position.x, JON.position.y || 0, JON.position.z);
+        jonGroup.add(jonObj);
+        jonGroup.add(jonLight);
+        jonGroup.visible = false; // stays hidden until she maxes out the strength bar
+        sceneLevel2.add(jonGroup);
+        jonGroupRef = jonGroup;
+        jonObjRef = jonObj;
+      },
+      { label: "Jon" }
+    );
+  }
 }
 
 // ------------------------------------------------------------
@@ -1834,10 +1897,17 @@ function updateDebris(delta) {
 // ------------------------------------------------------------
 // Loyola Campus environment (level 3) — same idea as the gym: built
 // directly into sceneLevel3, its own separate scene, so it's never part
-// of what's rendered until the level 2 -> 3 transition reveals it.
+// of what's rendered until the level 2 -> 3 transition reveals it. Lazily
+// loaded (see loadLevel2Assets() above for why) — only fetched once
+// startLevel3() actually runs, not at page load.
 // ------------------------------------------------------------
-if (LOYOLA && LOYOLA.glb) {
-  new GLTFLoader().load(
+let level3AssetsRequested = false;
+
+function loadLevel3Assets() {
+  if (level3AssetsRequested || !LOYOLA || !LOYOLA.glb) return;
+  level3AssetsRequested = true;
+
+  loadGLBWithRetry(
     LOYOLA.glb,
     (gltf) => {
       const loyolaObj = gltf.scene;
@@ -1857,10 +1927,7 @@ if (LOYOLA && LOYOLA.glb) {
       sceneLevel3.add(loyolaLight);
       registerColliderFromObject(sceneLevel3, loyolaObj, { excludeNames: LOYOLA.excludeNodeNames || [] });
     },
-    undefined,
-    () => {
-      /* if this fails, the world just won't have the campus in it */
-    }
+    { label: "the campus" }
   );
 }
 
@@ -2086,7 +2153,7 @@ let collectedCount = 0;
 let timeRemaining = 0;
 
 if (COLLECTIBLE && COLLECTIBLE.glb) {
-  new GLTFLoader().load(
+  loadGLBWithRetry(
     COLLECTIBLE.glb,
     (gltf) => {
       matchaTemplate = gltf.scene;
@@ -2096,10 +2163,7 @@ if (COLLECTIBLE && COLLECTIBLE.glb) {
       box.getSize(size);
       matchaScale = COLLECTIBLE.height / (size.y || 1);
     },
-    undefined,
-    () => {
-      /* if this fails, the minigame just won't have anything to spawn */
-    }
+    { label: "the matcha" }
   );
 }
 
@@ -2198,6 +2262,7 @@ function startLevel2() {
     label: LEVEL2_INTRO_MESSAGE.title,
     reveal: () => {
       loadPlayerModel(PLAYER_MODEL_2);
+      loadLevel2Assets();
       switchToScene(sceneLevel2, LEVEL2_SPAWN);
     },
     onDone: () => {
@@ -2222,7 +2287,7 @@ function spawnGymEquipment() {
   if (!GYM_EQUIPMENT || !GYM_EQUIPMENT.items) return;
   GYM_EQUIPMENT.items.forEach((item) => {
     if (!item.glb) return;
-    new GLTFLoader().load(
+    loadGLBWithRetry(
       item.glb,
       (gltf) => {
         const obj = gltf.scene;
@@ -2239,10 +2304,7 @@ function spawnGymEquipment() {
         // axis of the model, not a true circular footprint.
         addCollider(sceneLevel2, item.position.x, item.position.z, Math.min(item.targetWidth / 2, 2) * 0.5);
       },
-      undefined,
-      () => {
-        /* if this fails, that one piece of equipment just won't show up */
-      }
+      { label: item.name || "a piece of equipment" }
     );
   });
 }
@@ -2270,6 +2332,10 @@ function tryStartGymMinigame() {
   hintToast.classList.add("hidden");
   showBirdMessage(BIRD_MESSAGES.level2WorkoutStart);
   spawnGymEquipment();
+  // Same idea as loadLevel2Assets() above — start the ~54MB Loyola model
+  // downloading now, during the workout, instead of making her wait for it
+  // at the level 2 -> 3 transition.
+  loadLevel3Assets();
 
   const items = (GYM_EQUIPMENT && GYM_EQUIPMENT.items) || [];
   machines = items.map((item) => ({
@@ -2454,6 +2520,7 @@ function startLevel3() {
     label: LEVEL3_INTRO_MESSAGE.title,
     reveal: () => {
       loadPlayerModel(PLAYER_MODEL_3);
+      loadLevel3Assets();
       switchToScene(sceneLevel3, LEVEL3_SPAWN);
     },
     onDone: () => {
@@ -2953,13 +3020,19 @@ function runLevelTransition({ label, reveal, onDone }) {
   setTimeout(() => {
     if (reveal) reveal();
 
+    // Deliberately long hold (~17s, within the requested 15-20s window) on
+    // the black loading screen after reveal() fires — reveal() is exactly
+    // where the next level's heavy GLB assets start loading (see
+    // loadLevel2Assets/loadLevel3Assets), so this gives them real time to
+    // finish downloading/parsing before she's dropped into the new scene,
+    // instead of racing the fade and sometimes popping in mid-load.
     setTimeout(() => {
       levelTransition.classList.remove("visible");
       if (onDone) onDone();
       setTimeout(() => {
         levelTransition.classList.add("hidden");
       }, 600); // matches the CSS opacity transition duration
-    }, 500); // how long the screen holds fully black
+    }, 17000);
   }, 600); // matches the CSS opacity transition duration (fade in)
 }
 
@@ -3161,6 +3234,11 @@ function tryStartMinigame() {
   collectedCount = 0;
   timeRemaining = GAME.roundSeconds;
   hintToast.classList.add("hidden");
+  // Start downloading the gym/Jon (~95MB combined) in the background right
+  // now, during the round's ~timer-length of gameplay ahead — so by the
+  // time she actually finishes and presses N to advance, it's usually
+  // already loaded instead of making her wait through the transition.
+  loadLevel2Assets();
   collectibles.length = 0;
   spawnMatcha(COLLECTIBLE.initialCount);
   updateCounterHUD();
