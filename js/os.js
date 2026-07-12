@@ -35,7 +35,11 @@ const dockContainer = document.getElementById("os-dock");
 const windowsContainer = document.getElementById("os-windows");
 
 const LOGIN = OS_CONFIG.login || {};
-loginAvatar.textContent = LOGIN.avatar || "🙂";
+if (LOGIN.avatarImage) {
+  loginAvatar.innerHTML = `<img class="os-login-avatar-img" src="${LOGIN.avatarImage}" alt="" />`;
+} else {
+  loginAvatar.textContent = LOGIN.avatar || "🙂";
+}
 loginGreeting.textContent = LOGIN.greeting || "Welcome back";
 
 // ------------------------------------------------------------
@@ -137,8 +141,14 @@ setInterval(updateClock, 1000 * 15);
 function createIconEl(cfg, { small } = {}) {
   const el = document.createElement("div");
   el.className = "os-icon";
+  // Icons are normally just an emoji glyph, but some (like the desktop's
+  // "Browser" icon) use an actual photo instead — cfg.iconImage takes
+  // priority over cfg.icon when both/either are set.
+  const glyphHtml = cfg.iconImage
+    ? `<img class="os-icon-img" src="${cfg.iconImage}" alt="${cfg.label}" />`
+    : cfg.icon;
   el.innerHTML = `
-    <div class="os-icon-glyph"${small ? ' style="font-size:1.6em"' : ""}>${cfg.icon}</div>
+    <div class="os-icon-glyph"${small ? ' style="font-size:1.6em"' : ""}>${glyphHtml}</div>
     <div class="os-icon-label">${cfg.label}</div>
   `;
   // Unified double-click/double-tap detection via Pointer Events — native
@@ -308,7 +318,11 @@ const iconsById = new Map((OS_CONFIG.desktopIcons || []).map((cfg) => [cfg.id, c
   if (!cfg) return;
   const el = document.createElement("div");
   el.className = "os-dock-icon" + (cfg.id === "start-game" ? " is-start-game" : "");
-  el.textContent = cfg.icon;
+  if (cfg.iconImage) {
+    el.innerHTML = `<img class="os-dock-icon-img" src="${cfg.iconImage}" alt="${cfg.label}" />`;
+  } else {
+    el.textContent = cfg.icon;
+  }
   el.title = cfg.label;
   el.addEventListener("click", () => activateIcon(cfg));
   dockContainer.appendChild(el);

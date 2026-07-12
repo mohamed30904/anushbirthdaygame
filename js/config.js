@@ -29,7 +29,8 @@ export const OS_CONFIG = {
   login: {
     username: "anushunanyan",
     password: "13JULY2004",
-    avatar: "🌷",
+    avatar: "🌷", // fallback if avatarImage is ever removed
+    avatarImage: "images/AnushOSProfilePic.jpg",
     greeting: "Welcome back",
     wrongPasswordMessage: "Incorrect username or password — try again.",
   },
