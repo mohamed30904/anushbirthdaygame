@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Anush's Birthday V2</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="css/os.css" />
+<style>
+  /* Inline critical CSS — guarantees AnushOS covers the game with zero
+     flash-of-game-first, even for a brief instant before css/os.css has
+     finished loading over the network. No external request, so there's
+     nothing to race against. */
+  html, body { background: #180a20; margin: 0; }
+  #os-layer { position: fixed; inset: 0; z-index: 9999; background: #180a20; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="os-layer">
+    <div id="os-boot">
+      <div id="os-boot-logo">AnushOS</div>
+      <div id="os-boot-bar-track">
+        <div id="os-boot-bar-fill"></div>
+      </div>
+    </div>
+
+    <div id="os-login" class="hidden">
+      <div id="os-login-card">
+        <div id="os-login-avatar"></div>
+        <div id="os-login-greeting"></div>
+        <form id="os-login-form" autocomplete="off">
+          <input type="text" id="os-login-username" placeholder="Username" autocomplete="off" />
+          <input type="password" id="os-login-password" placeholder="Password" autocomplete="off" />
+          <button type="submit" id="os-login-submit">Log In</button>
+        </form>
+        <div id="os-login-error"></div>
+      </div>
+    </div>
+
+    <div id="os-desktop" class="hidden">
+      <div id="os-menubar">
+        <div id="os-menubar-title">🌸 AnushOS</div>
+        <div id="os-menubar-clock"></div>
+      </div>
+      <div id="os-icons"></div>
+      <div id="os-windows"></div>
+      <div id="os-dock"></div>
+    </div>
+  </div>
+
+  <div id="blocker">
+    <div id="menu">
+      <h1 id="game-title">Happy Birthday</h1>
+      <p id="game-subtitle">A little world of us — walk through it</p>
+      <button id="start-button">Click to Start</button>
+    </div>
+  </div>
+
+  <div id="message-overlay" class="hidden">
+    <div id="message-box">
+      <h2 id="message-title"></h2>
+      <img id="message-image" class="hidden" />
+      <p id="message-text"></p>
+      <button id="message-close">Close</button>
+    </div>
+  </div>
+
+  <div id="hint-toast" class="hidden"></div>
+  <div id="collect-counter" class="hidden"></div>
+  <div id="timer-hud" class="hidden"></div>
+  <div id="strength-hud" class="hidden">
+    <div id="strength-label">Strength</div>
+    <div id="strength-bar-track">
+      <div id="strength-bar-fill"></div>
+    </div>
+  </div>
+
+  <div id="titration-hud" class="hidden">
+    <div id="titration-label">Press R to add a drop — land in the highlighted zone</div>
+    <div id="titration-bar-track">
+      <div id="titration-target-zone"></div>
+      <div id="titration-bar-fill"></div>
+    </div>
+  </div>
+
+  <div id="molecule-hud" class="hidden">
+    <div id="molecule-label">Build: <span id="molecule-formula"></span></div>
+    <div id="molecule-progress"></div>
+  </div>
+
+  <div id="jon-health-hud" class="hidden">
+    <div id="jon-health-label">Jon's Health</div>
+    <div id="jon-health-bar-track">
+      <div id="jon-health-fill"></div>
+    </div>
+  </div>
+
+  <div id="level-transition" class="hidden">
+    <div id="level-transition-text"></div>
+  </div>
+
+  <div id="selfie-counter" class="hidden"></div>
+  <div id="camera-flash"></div>
+
+  <!-- Shown once a level's win condition is met — the scene stays fully
+       explorable and this is the only thing that actually advances to
+       the next level (see the "KeyN" handler in game.js). -->
+  <div id="next-level-toast" class="hidden">Press N for the next level</div>
+
+  <!-- On-screen touch controls — only shown on touch devices (see the
+       "pointer: coarse" media query in style.css), hidden whenever the
+       game isn't actively locked (same visibility rule as the HUD). -->
+  <div id="touch-controls" class="hidden">
+    <div id="touch-movepad">
+      <button id="touch-up" class="touch-pad-btn" aria-label="Move forward">▲</button>
+      <button id="touch-left" class="touch-pad-btn" aria-label="Turn left">◀</button>
+      <button id="touch-down" class="touch-pad-btn" aria-label="Move backward">▼</button>
+      <button id="touch-right" class="touch-pad-btn" aria-label="Turn right">▶</button>
+    </div>
+    <div id="touch-actions">
+      <button id="touch-btn-interact" class="touch-action-btn">Interact</button>
+      <button id="touch-btn-n" class="touch-action-btn next-level hidden">Next</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/os.js"></script>
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>
