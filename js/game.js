@@ -1556,8 +1556,31 @@ function loadGLBWithRetry(
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
-          onSuccess(gltf);
-          resolve(gltf);
+          // The download/parse itself succeeded at this point — anything
+          // that throws past here (autoFitAndPlace, registerCollider, etc.)
+          // is a bug in what we're doing with the result, not a network
+          // problem. Without this try/catch, that throw would happen
+          // *before* resolve(gltf) below ever runs — meaning the item
+          // would silently never appear: no error shown, no retry, no
+          // resolved promise, just permanently missing. That's exactly the
+          // "some things didn't load at all" symptom, and since there's no
+          // way to check the console on a phone, it needs to recover on
+          // its own instead of just logging and giving up. So a setup
+          // failure is now treated exactly like a network failure — it
+          // goes through the same handleFailure() retry path (fresh
+          // download, fresh attempt at setup, with backoff), rather than
+          // resolving anyway. If the failure is a one-off (a transient
+          // WebGL/state hiccup), a later attempt succeeds. If it's a
+          // genuine, deterministic bug, this can't fix that on its own —
+          // but it guarantees the item keeps trying forever instead of
+          // quietly vanishing for the rest of the session.
+          try {
+            onSuccess(gltf);
+            resolve(gltf);
+          } catch (setupErr) {
+            console.error(`[loadGLBWithRetry] ${niceLabel}: setup failed after loading, retrying:`, setupErr);
+            handleFailure(setupErr);
+          }
         },
         undefined,
         (err) => {
@@ -1633,7 +1656,11 @@ function loadPlayerModel(modelConfig) {
   );
 }
 
-loadPlayerModel(PLAYER_MODEL);
+// Captured so the initial "Start" click can hold a loading screen until
+// she actually has an outfit + a café to look at, instead of dropping her
+// straight into a scene that's still populating in the background (see
+// the startButton click handler further down).
+const initialPlayerReadyPromise = loadPlayerModel(PLAYER_MODEL);
 
 // ------------------------------------------------------------
 // Cafe environment
@@ -1783,8 +1810,13 @@ function addGymCoverPanels(obj) {
   return cover;
 }
 
+// Same purpose as initialPlayerReadyPromise above — captured so the
+// "Start" click can hold its own loading screen until the café is
+// actually there to walk into.
+let cafeReadyPromise = Promise.resolve();
+
 if (CAFE && CAFE.glb) {
-  loadGLBWithRetry(
+  cafeReadyPromise = loadGLBWithRetry(
     compressedPathFor(CAFE.glb),
     (gltf) => {
       const cafeObj = gltf.scene;
@@ -3118,19 +3150,32 @@ function tryAdvanceLevel() {
 // ------------------------------------------------------------
 // Level transition — a full-screen fade to black used between levels so
 // each new area (gym, campus) appears on its own instead of all being
-// visible/loaded-in from the start. `reveal` runs once the next level's
-// assets are actually ready (swap player model, flip environment group
-// visibility, switch scene); `onDone` runs once the fade back in has
-// started.
+// visible/loaded-in from the start.
 //
-// `readyPromise` (optional) is awaited before reveal() ever fires — this
-// is what makes the black screen adapt to real load time instead of
-// guessing a fixed delay: on a fast connection it resolves quickly and the
-// screen only holds for `minHoldMs`; on a slow one it just keeps holding,
-// silently, until the real assets are in hand (capped at `maxHoldMs` as an
-// absolute safety valve, since loadGLBWithRetry itself never gives up on
-// its own). This guarantees the gym/campus/player are never revealed
-// half-loaded or missing.
+// `reveal` now runs as soon as the screen is fully opaque (600ms in) —
+// NOT once the next level's heavy assets finish loading. This matters:
+// reveal() is where switchToScene() runs, which moves the player out of
+// the old scene and frees its GPU memory (see disposeObject3D). Since the
+// screen is already fully black at that point, there's nothing lost by
+// doing the actual scene switch immediately — the next level's building
+// model, equipment, etc. simply pop into their (still-hidden, still-black)
+// new scene whenever their own downloads finish, same as always.
+//
+// The important fix this gives us: the level she's LEAVING is freed from
+// memory right away, in parallel with the next level's assets still
+// downloading — instead of both being fully resident in memory at once
+// for a stretch. That overlap (old scene not yet freed, new scene's heavy
+// download landing on top of it) was the actual peak-memory moment
+// causing the phone to run out of room and reload mid-load, even after
+// the disposal logic was added, because disposal was only happening
+// *after* the new assets had already finished loading.
+//
+// `readyPromise` (optional) now purely gates the fade-back-in (removing
+// "visible") — it makes the black screen linger, adapting to real load
+// time, until the next level's assets are actually ready to look at
+// (capped at `maxHoldMs` as an absolute safety valve, since
+// loadGLBWithRetry itself never gives up on its own). `onDone` runs once
+// that fade back in has started.
 // ------------------------------------------------------------
 function runLevelTransition({ label, readyPromise, reveal, onDone, minHoldMs = 2000, maxHoldMs = 45000 }) {
   levelTransitionText.textContent = label || "";
@@ -3144,6 +3189,11 @@ function runLevelTransition({ label, readyPromise, reveal, onDone, minHoldMs = 2
   });
 
   setTimeout(() => {
+    // Screen is fully black now — safe to actually switch scenes (and
+    // free the one she's leaving) even though the next level's heavy
+    // assets are usually still mid-download at this exact moment.
+    if (reveal) reveal();
+
     const waitStart = performance.now();
     const capped = readyPromise
       ? Promise.race([
@@ -3159,18 +3209,11 @@ function runLevelTransition({ label, readyPromise, reveal, onDone, minHoldMs = 2
       const remaining = Math.max(0, minHoldMs - elapsed);
 
       setTimeout(() => {
-        if (reveal) reveal();
-
-        // A short beat on black after reveal() (scene switch/model swap)
-        // before fading back in — purely cosmetic at this point, since
-        // reveal() only ever runs once the real assets are already loaded.
+        levelTransition.classList.remove("visible");
+        if (onDone) onDone();
         setTimeout(() => {
-          levelTransition.classList.remove("visible");
-          if (onDone) onDone();
-          setTimeout(() => {
-            levelTransition.classList.add("hidden");
-          }, 600); // matches the CSS opacity transition duration
-        }, 500);
+          levelTransition.classList.add("hidden");
+        }, 600); // matches the CSS opacity transition duration
       }, remaining);
     });
   }, 600); // matches the CSS opacity transition duration (fade in)
@@ -3203,7 +3246,22 @@ function switchToScene(nextScene, spawn) {
 let gameStarted = false;
 
 startButton.addEventListener("click", () => {
-  controls.lock();
+  // Same idea as the level 2-5 transitions: hold a loading screen instead
+  // of dropping her straight into the café while her outfit and/or the
+  // café building might still be mid-download in the background — that
+  // gap (a placeholder body, an empty plaza) was exactly what "things
+  // don't load when the game starts" was describing. controls.lock() is
+  // custom UI-state code, not a real browser API, so it's safe to defer
+  // it like this.
+  blocker.classList.add("hidden");
+  runLevelTransition({
+    label: "",
+    readyPromise: Promise.all([initialPlayerReadyPromise, cafeReadyPromise]),
+    reveal: () => {},
+    onDone: () => {
+      controls.lock();
+    },
+  });
 });
 
 const move = { forward: false, backward: false, left: false, right: false };
