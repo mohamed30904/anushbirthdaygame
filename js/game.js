@@ -1460,9 +1460,11 @@ function applyGLTFMaterialFixes(root) {
 // forever, with a short, fast-ramping delay between tries so it recovers
 // quickly from a dropped connection. This is entirely silent from her
 // perspective — no banner, no visible error state, ever. It just keeps
-// retrying in the background until it succeeds, and the level-transition
-// loading screen is held long enough (see runLevelTransition) to cover
-// the retries in the vast majority of cases.
+// retrying in the background until it succeeds. It also returns a Promise
+// that resolves once the model is actually in hand — runLevelTransition
+// uses this to hold the loading screen until the real assets for the next
+// level are ready, instead of guessing a fixed delay, so she is never
+// dropped into a scene with something still missing.
 // ------------------------------------------------------------
 function loadGLBWithRetry(
   url,
@@ -1472,57 +1474,60 @@ function loadGLBWithRetry(
   const niceLabel = label || url;
   let attempt = 0;
 
-  function attemptLoad() {
-    attempt += 1;
-    let settled = false;
+  return new Promise((resolve) => {
+    function attemptLoad() {
+      attempt += 1;
+      let settled = false;
 
-    // GLTFLoader has no built-in timeout — a dropped/stalled connection can
-    // just hang with no error ever firing. This forces a retry after
-    // attemptTimeoutMs even if nothing "failed" in the traditional sense.
-    const timeoutId = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      handleFailure(new Error(`timed out after ${attemptTimeoutMs}ms`));
-    }, attemptTimeoutMs);
-
-    new GLTFLoader().load(
-      url,
-      (gltf) => {
+      // GLTFLoader has no built-in timeout — a dropped/stalled connection can
+      // just hang with no error ever firing. This forces a retry after
+      // attemptTimeoutMs even if nothing "failed" in the traditional sense.
+      const timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeoutId);
-        onSuccess(gltf);
-      },
-      undefined,
-      (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        handleFailure(err);
-      }
-    );
-  }
+        handleFailure(new Error(`timed out after ${attemptTimeoutMs}ms`));
+      }, attemptTimeoutMs);
 
-  function handleFailure(err) {
-    console.error(`[loadGLBWithRetry] failed to load ${niceLabel} (attempt ${attempt}):`, err);
-    // Fast, capped backoff with jitter — no visible sign of this to the
-    // user, and no upper bound on attempt count. It just quietly keeps
-    // trying until it works.
-    const jitter = 0.85 + Math.random() * 0.3;
-    const delay = Math.min(retryDelayMs * attempt, maxDelayMs) * jitter;
-    setTimeout(attemptLoad, delay);
-  }
+      new GLTFLoader().load(
+        url,
+        (gltf) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          onSuccess(gltf);
+          resolve(gltf);
+        },
+        undefined,
+        (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          handleFailure(err);
+        }
+      );
+    }
 
-  attemptLoad();
+    function handleFailure(err) {
+      console.error(`[loadGLBWithRetry] failed to load ${niceLabel} (attempt ${attempt}):`, err);
+      // Fast, capped backoff with jitter — no visible sign of this to the
+      // user, and no upper bound on attempt count. It just quietly keeps
+      // trying until it works.
+      const jitter = 0.85 + Math.random() * 0.3;
+      const delay = Math.min(retryDelayMs * attempt, maxDelayMs) * jitter;
+      setTimeout(attemptLoad, delay);
+    }
+
+    attemptLoad();
+  });
 }
 
 // Loads a character GLB and swaps it in as the currently-visible player
 // mesh — used for the initial café outfit and again for the gym outfit
 // once level 2 unlocks.
 function loadPlayerModel(modelConfig) {
-  if (!modelConfig || !modelConfig.glb) return;
+  if (!modelConfig || !modelConfig.glb) return Promise.resolve();
   console.log("[loadPlayerModel] requesting:", modelConfig.glb);
-  loadGLBWithRetry(
+  return loadGLBWithRetry(
     modelConfig.glb,
     (gltf) => {
       const obj = gltf.scene;
@@ -1772,13 +1777,25 @@ let jonGroupRef = null;
 let jonObjRef = null;
 let jonMaterials = [];
 let level2AssetsRequested = false;
+let level2ReadyPromise = null;
 
+// Returns a Promise that resolves once every level-2 model (gym + Jon) has
+// actually finished loading — safe to call repeatedly (e.g. once as an
+// early prefetch, again as a fallback at the transition itself); it only
+// ever kicks off the real downloads once, and always hands back the same
+// promise so callers can wait on "is level 2 actually ready" regardless of
+// which call site triggered the load.
 function loadLevel2Assets() {
-  if (level2AssetsRequested) return;
+  if (level2AssetsRequested) return level2ReadyPromise;
   level2AssetsRequested = true;
+  // Only the gym building itself gates the "ready to reveal" promise below —
+  // Jon stays invisible until the strength bar is maxed out mid-workout, so
+  // there's no need to make her wait on his (separately downloading) model
+  // before she can even enter the gym.
+  const pending = [];
 
   if (GYM && GYM.glb) {
-    loadGLBWithRetry(
+    pending.push(loadGLBWithRetry(
       GYM.glb,
       (gltf) => {
         const gymObj = gltf.scene;
@@ -1806,9 +1823,11 @@ function loadLevel2Assets() {
         registerColliderFromObject(sceneLevel2, gymObj, { excludeNames: GYM.excludeNodeNames || [] });
       },
       { label: "the gym" }
-    );
+    ));
   }
 
+  // Jon's model loads in the background too, but isn't part of `pending` —
+  // see note above.
   if (JON && JON.glb) {
     loadGLBWithRetry(
       JON.glb,
@@ -1848,6 +1867,9 @@ function loadLevel2Assets() {
       { label: "Jon" }
     );
   }
+
+  level2ReadyPromise = Promise.all(pending);
+  return level2ReadyPromise;
 }
 
 // ------------------------------------------------------------
@@ -1902,12 +1924,19 @@ function updateDebris(delta) {
 // startLevel3() actually runs, not at page load.
 // ------------------------------------------------------------
 let level3AssetsRequested = false;
+let level3ReadyPromise = null;
 
+// Same "always returns the ready promise" pattern as loadLevel2Assets().
 function loadLevel3Assets() {
-  if (level3AssetsRequested || !LOYOLA || !LOYOLA.glb) return;
+  if (level3AssetsRequested) return level3ReadyPromise;
   level3AssetsRequested = true;
 
-  loadGLBWithRetry(
+  if (!LOYOLA || !LOYOLA.glb) {
+    level3ReadyPromise = Promise.resolve();
+    return level3ReadyPromise;
+  }
+
+  level3ReadyPromise = loadGLBWithRetry(
     LOYOLA.glb,
     (gltf) => {
       const loyolaObj = gltf.scene;
@@ -1929,6 +1958,7 @@ function loadLevel3Assets() {
     },
     { label: "the campus" }
   );
+  return level3ReadyPromise;
 }
 
 // ------------------------------------------------------------
@@ -2258,11 +2288,16 @@ function startLevel2() {
   console.log("[startLevel2] called");
   level1Complete = true;
 
+  // Kick off (or pick up) the loads immediately, in parallel with the
+  // fade-to-black — runLevelTransition below won't reveal the gym scene
+  // until both of these have actually resolved.
+  const playerReady = loadPlayerModel(PLAYER_MODEL_2);
+  const envReady = loadLevel2Assets();
+
   runLevelTransition({
     label: LEVEL2_INTRO_MESSAGE.title,
+    readyPromise: Promise.all([playerReady, envReady]),
     reveal: () => {
-      loadPlayerModel(PLAYER_MODEL_2);
-      loadLevel2Assets();
       switchToScene(sceneLevel2, LEVEL2_SPAWN);
     },
     onDone: () => {
@@ -2516,11 +2551,13 @@ let moleculeQueueIndex = 0; // which entry in moleculeQueue is the current round
 function startLevel3() {
   console.log("[startLevel3] called");
 
+  const playerReady = loadPlayerModel(PLAYER_MODEL_3);
+  const envReady = loadLevel3Assets();
+
   runLevelTransition({
     label: LEVEL3_INTRO_MESSAGE.title,
+    readyPromise: Promise.all([playerReady, envReady]),
     reveal: () => {
-      loadPlayerModel(PLAYER_MODEL_3);
-      loadLevel3Assets();
       switchToScene(sceneLevel3, LEVEL3_SPAWN);
     },
     onDone: () => {
@@ -2805,10 +2842,12 @@ let nearMirror = null; // the closest in-range mirror ref, or null
 function startLevel4() {
   console.log("[startLevel4] called");
 
+  const playerReady = loadPlayerModel(PLAYER_MODEL_4);
+
   runLevelTransition({
     label: LEVEL4_INTRO_MESSAGE.title,
+    readyPromise: playerReady,
     reveal: () => {
-      loadPlayerModel(PLAYER_MODEL_4);
       switchToScene(sceneLevel4, LEVEL4_SPAWN);
     },
     onDone: () => {
@@ -3002,11 +3041,21 @@ function tryAdvanceLevel() {
 // ------------------------------------------------------------
 // Level transition — a full-screen fade to black used between levels so
 // each new area (gym, campus) appears on its own instead of all being
-// visible/loaded-in from the start. `reveal` runs while the screen is
-// fully black (swap player model, flip environment group visibility);
-// `onDone` runs once the fade back in has started.
+// visible/loaded-in from the start. `reveal` runs once the next level's
+// assets are actually ready (swap player model, flip environment group
+// visibility, switch scene); `onDone` runs once the fade back in has
+// started.
+//
+// `readyPromise` (optional) is awaited before reveal() ever fires — this
+// is what makes the black screen adapt to real load time instead of
+// guessing a fixed delay: on a fast connection it resolves quickly and the
+// screen only holds for `minHoldMs`; on a slow one it just keeps holding,
+// silently, until the real assets are in hand (capped at `maxHoldMs` as an
+// absolute safety valve, since loadGLBWithRetry itself never gives up on
+// its own). This guarantees the gym/campus/player are never revealed
+// half-loaded or missing.
 // ------------------------------------------------------------
-function runLevelTransition({ label, reveal, onDone }) {
+function runLevelTransition({ label, readyPromise, reveal, onDone, minHoldMs = 2000, maxHoldMs = 45000 }) {
   levelTransitionText.textContent = label || "";
   levelTransition.classList.remove("hidden");
   // Force layout so the "hidden" removal is applied before we add
@@ -3018,21 +3067,35 @@ function runLevelTransition({ label, reveal, onDone }) {
   });
 
   setTimeout(() => {
-    if (reveal) reveal();
+    const waitStart = performance.now();
+    const capped = readyPromise
+      ? Promise.race([
+          Promise.resolve(readyPromise),
+          new Promise((resolve) => setTimeout(resolve, maxHoldMs)),
+        ])
+      : Promise.resolve();
 
-    // Deliberately long hold (~17s, within the requested 15-20s window) on
-    // the black loading screen after reveal() fires — reveal() is exactly
-    // where the next level's heavy GLB assets start loading (see
-    // loadLevel2Assets/loadLevel3Assets), so this gives them real time to
-    // finish downloading/parsing before she's dropped into the new scene,
-    // instead of racing the fade and sometimes popping in mid-load.
-    setTimeout(() => {
-      levelTransition.classList.remove("visible");
-      if (onDone) onDone();
+    capped.then(() => {
+      // Always hold for at least minHoldMs total, so a fast connection
+      // still feels like a deliberate transition rather than a jarring cut.
+      const elapsed = performance.now() - waitStart;
+      const remaining = Math.max(0, minHoldMs - elapsed);
+
       setTimeout(() => {
-        levelTransition.classList.add("hidden");
-      }, 600); // matches the CSS opacity transition duration
-    }, 17000);
+        if (reveal) reveal();
+
+        // A short beat on black after reveal() (scene switch/model swap)
+        // before fading back in — purely cosmetic at this point, since
+        // reveal() only ever runs once the real assets are already loaded.
+        setTimeout(() => {
+          levelTransition.classList.remove("visible");
+          if (onDone) onDone();
+          setTimeout(() => {
+            levelTransition.classList.add("hidden");
+          }, 600); // matches the CSS opacity transition duration
+        }, 500);
+      }, remaining);
+    });
   }, 600); // matches the CSS opacity transition duration (fade in)
 }
 
