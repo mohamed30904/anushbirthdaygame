@@ -1,0 +1,542 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05010a;
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: #fff;
+}
+
+canvas { display: block; touch-action: none; }
+
+#blocker {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(60,10,50,0.85), rgba(5,1,10,0.97));
+  z-index: 50;
+}
+
+#blocker.hidden { display: none; }
+
+#menu {
+  text-align: center;
+  padding: 40px 50px;
+  border: 1px solid rgba(255,180,220,0.3);
+  border-radius: 16px;
+  background: rgba(20,5,25,0.5);
+  backdrop-filter: blur(6px);
+  max-width: 480px;
+}
+
+#game-title {
+  font-size: 2.6em;
+  margin: 0 0 6px 0;
+  color: #ffd9ec;
+  text-shadow: 0 0 20px rgba(255,120,180,0.7);
+  letter-spacing: 1px;
+}
+
+#game-subtitle {
+  margin: 0 0 24px 0;
+  color: #f4c9e0;
+  font-style: italic;
+}
+
+#start-button {
+  font-size: 1.1em;
+  padding: 12px 30px;
+  border-radius: 30px;
+  border: none;
+  background: linear-gradient(135deg, #ff8ac4, #ff5f9e);
+  color: #2a0018;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 0 25px rgba(255,120,180,0.6);
+  transition: transform 0.15s ease;
+}
+#start-button:hover { transform: scale(1.05); }
+
+.hint {
+  margin-top: 20px;
+  font-size: 0.85em;
+  color: #d9a9c4;
+  line-height: 1.5em;
+}
+
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(255,255,255,0.6);
+  font-size: 18px;
+  z-index: 20;
+  pointer-events: none;
+}
+
+#message-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5,1,10,0.75);
+  backdrop-filter: blur(3px);
+}
+#message-overlay.hidden { display: none; }
+
+#message-box {
+  max-width: 520px;
+  width: 90%;
+  background: linear-gradient(160deg, #2a0f28, #180a20);
+  border: 1px solid rgba(255,180,220,0.35);
+  border-radius: 18px;
+  padding: 30px 34px;
+  text-align: center;
+  box-shadow: 0 0 40px rgba(255,120,180,0.35);
+}
+
+#message-title {
+  margin: 0 0 12px 0;
+  color: #ffd9ec;
+  font-size: 1.6em;
+}
+
+#message-image {
+  max-width: 100%;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+#message-image.hidden { display: none; }
+
+#message-text {
+  color: #f4dceb;
+  line-height: 1.6em;
+  white-space: pre-wrap;
+}
+
+#message-close {
+  margin-top: 18px;
+  padding: 8px 24px;
+  border-radius: 24px;
+  border: none;
+  background: #ff5f9e;
+  color: #2a0018;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#hint-toast {
+  position: fixed;
+  /* Sits above the strength/titration/Jon-health bars (all bottom:40px,
+     same horizontal center) instead of directly on top of them — those
+     boxes run roughly 90-100px tall, so this clears them with a gap. */
+  bottom: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,5,25,0.75);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 0.95em;
+  color: #ffd9ec;
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+#hint-toast.hidden { opacity: 0; pointer-events: none; }
+
+#next-level-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,5,25,0.8);
+  padding: 10px 22px;
+  border-radius: 20px;
+  font-size: 0.95em;
+  font-weight: bold;
+  color: #ffd9ec;
+  border: 1px solid rgba(255,120,180,0.6);
+  box-shadow: 0 0 18px rgba(255,120,180,0.4);
+  z-index: 25;
+  transition: opacity 0.2s ease;
+}
+#next-level-toast.hidden { opacity: 0; pointer-events: none; }
+
+#collect-counter {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  background: rgba(20,5,25,0.75);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 1em;
+  color: #d9ffe6;
+  border: 1px solid rgba(180,255,210,0.3);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+#collect-counter.hidden { opacity: 0; pointer-events: none; }
+
+#timer-hud {
+  position: fixed;
+  top: 24px;
+  left: 24px;
+  background: rgba(20,5,25,0.75);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 1em;
+  color: #ffe6d9;
+  border: 1px solid rgba(255,210,180,0.3);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+#timer-hud.hidden { opacity: 0; pointer-events: none; }
+
+#strength-hud {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,5,25,0.75);
+  padding: 12px 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,180,220,0.3);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+  width: 260px;
+  text-align: center;
+}
+#strength-hud.hidden { opacity: 0; pointer-events: none; }
+
+#strength-label {
+  font-size: 0.85em;
+  color: #ffd9ec;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+#strength-bar-track {
+  width: 100%;
+  height: 16px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.15);
+  overflow: hidden;
+}
+
+#strength-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #ff8ac4, #ff5f9e);
+  border-radius: 10px;
+  transition: width 0.05s linear;
+}
+
+#titration-hud {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,5,25,0.75);
+  padding: 12px 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(180,220,255,0.35);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+  width: 340px;
+  text-align: center;
+}
+#titration-hud.hidden { opacity: 0; pointer-events: none; }
+
+#titration-label {
+  font-size: 0.85em;
+  color: #d9f0ff;
+  margin-bottom: 8px;
+  line-height: 1.4em;
+}
+
+#titration-bar-track {
+  position: relative;
+  width: 100%;
+  height: 18px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.15);
+  overflow: hidden;
+}
+
+#titration-target-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 55%;
+  width: 15%;
+  background: rgba(140,255,190,0.35);
+  border-left: 1px solid rgba(140,255,190,0.7);
+  border-right: 1px solid rgba(140,255,190,0.7);
+}
+
+#titration-bar-fill {
+  position: relative;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #8ac4ff, #5f9eff);
+  border-radius: 10px;
+  transition: width 0.05s linear;
+}
+
+#molecule-hud {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  background: rgba(20,5,25,0.75);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 1em;
+  color: #d9ffe6;
+  border: 1px solid rgba(180,255,210,0.3);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+  text-align: center;
+}
+#molecule-hud.hidden { opacity: 0; pointer-events: none; }
+
+#molecule-formula {
+  color: #ffd9ec;
+  font-weight: bold;
+}
+
+#molecule-progress {
+  margin-top: 6px;
+  font-size: 0.85em;
+  color: #f4dceb;
+}
+
+#jon-health-hud {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,5,25,0.75);
+  padding: 12px 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,120,120,0.4);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+  width: 280px;
+  text-align: center;
+}
+#jon-health-hud.hidden { opacity: 0; pointer-events: none; }
+
+#jon-health-label {
+  font-size: 0.85em;
+  color: #ffd9d9;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+#jon-health-bar-track {
+  width: 100%;
+  height: 16px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.15);
+  overflow: hidden;
+}
+
+#jon-health-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #ff5f5f, #ff2e2e);
+  border-radius: 10px;
+  transition: width 0.15s ease;
+}
+
+#level-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: #05010a;
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.6s ease;
+}
+#level-transition.hidden { display: none; }
+#level-transition.visible { opacity: 1; pointer-events: all; }
+
+#level-transition-text {
+  color: #ffd9ec;
+  font-size: 2.2em;
+  letter-spacing: 1px;
+  text-shadow: 0 0 20px rgba(255,120,180,0.7);
+  font-style: italic;
+}
+
+#selfie-counter {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  background: rgba(20,5,25,0.75);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 1em;
+  color: #ffd9ec;
+  border: 1px solid rgba(255,180,220,0.3);
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+#selfie-counter.hidden { opacity: 0; pointer-events: none; }
+
+#camera-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ============================================================
+   TOUCH CONTROLS — on-screen movement pad + action buttons, shown only
+   on touch devices (see the "pointer: coarse" media query below) and
+   only while the game is actually locked/playing (same visibility rule
+   as the rest of the HUD, toggled in game.js's controls.lock()/unlock()).
+   ============================================================ */
+
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  display: none; /* only ever shown on coarse-pointer (touch) devices, see media query */
+}
+#touch-controls.hidden { display: none !important; }
+
+@media (pointer: coarse) {
+  #touch-controls { display: block; }
+}
+
+#touch-movepad {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  width: 168px;
+  height: 168px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+  gap: 6px;
+  pointer-events: all;
+}
+#touch-up { grid-column: 2; grid-row: 1; }
+#touch-left { grid-column: 1; grid-row: 2; }
+#touch-down { grid-column: 2; grid-row: 3; }
+#touch-right { grid-column: 3; grid-row: 2; }
+
+.touch-pad-btn {
+  border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 14px;
+  background: rgba(20,5,25,0.55);
+  color: #ffd9ec;
+  font-size: 1.3em;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.touch-pad-btn:active { background: rgba(255,95,158,0.55); }
+
+#touch-actions {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  pointer-events: all;
+}
+
+.touch-action-btn {
+  width: 78px;
+  height: 60px;
+  border: 1px solid rgba(255,180,220,0.4);
+  border-radius: 16px;
+  background: rgba(20,5,25,0.6);
+  color: #ffd9ec;
+  font-size: 0.85em;
+  font-weight: bold;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.touch-action-btn:active { background: rgba(255,95,158,0.65); }
+.touch-action-btn.next-level {
+  border-color: rgba(255,120,180,0.8);
+  box-shadow: 0 0 12px rgba(255,120,180,0.5);
+}
+.touch-action-btn.hidden { display: none; }
+
+/* ============================================================
+   MOBILE / NARROW-SCREEN RESPONSIVE PASS
+   ============================================================ */
+@media (max-width: 640px) {
+  #menu {
+    padding: 28px 26px;
+    max-width: 90vw;
+  }
+  #game-title { font-size: 1.9em; }
+
+  #message-box {
+    width: 94vw;
+    padding: 22px 20px;
+  }
+
+  #strength-hud,
+  #titration-hud {
+    width: 86vw;
+    max-width: 320px;
+    bottom: 200px; /* clear the touch controls beneath */
+  }
+
+  #molecule-hud,
+  #collect-counter,
+  #selfie-counter,
+  #timer-hud {
+    font-size: 0.85em;
+    padding: 8px 14px;
+  }
+
+  #jon-health-hud {
+    width: 86vw;
+    max-width: 300px;
+    bottom: 200px;
+  }
+
+  #hint-toast {
+    /* Same idea as desktop — clear the strength/titration/Jon-health bars
+       (bottom:200px on mobile) instead of sitting on top of them. */
+    bottom: 270px;
+    max-width: 80vw;
+    font-size: 0.85em;
+  }
+
+  #touch-movepad {
+    width: 144px;
+    height: 144px;
+  }
+
+  .touch-action-btn {
+    width: 66px;
+    height: 52px;
+    font-size: 0.78em;
+  }
+}
