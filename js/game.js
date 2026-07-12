@@ -1446,6 +1446,45 @@ function applyGLTFMaterialFixes(root) {
 }
 
 // ------------------------------------------------------------
+// GPU resource cleanup — frees geometry/material/texture memory for an
+// object (and everything under it) that's genuinely done being used.
+//
+// Why this exists: every level lives in its own permanent THREE.Scene, and
+// none of them were ever being cleared. Since progression is strictly
+// forward-only (café -> gym -> campus -> mirrors -> garden, never back),
+// every previous level's models — the café, matcha collectibles, gym +
+// Jon + all its equipment, her 3-4 prior outfits, the Loyola campus scan —
+// were staying fully resident in GPU memory for the rest of the session,
+// on top of whatever the current level needed. On a phone, that
+// accumulation was enough to blow past iOS Safari's per-tab memory budget
+// by the time Loyola (a 53MB scan) tried to load on top of everything
+// already sitting in VRAM from the café + gym — which is exactly why it
+// reloaded the page every single time at that point, not randomly.
+//
+// Calling .dispose() here doesn't destroy any JS data (so it's safe even
+// if a geometry/texture happens to still be referenced from elsewhere,
+// like the cake model reused in both the café and the garden ending) —
+// it just tells the renderer it can free the associated GPU buffer right
+// now instead of whenever the object is eventually garbage collected.
+// ------------------------------------------------------------
+function disposeObject3D(root) {
+  if (!root) return;
+  root.traverse((obj) => {
+    if (!obj.isMesh) return;
+    if (obj.geometry) obj.geometry.dispose();
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    materials.forEach((mat) => {
+      if (!mat) return;
+      Object.keys(mat).forEach((key) => {
+        const value = mat[key];
+        if (value && value.isTexture) value.dispose();
+      });
+      mat.dispose();
+    });
+  });
+}
+
+// ------------------------------------------------------------
 // GLB loading with automatic retry + a visible failure message. Every
 // model load in this file goes through this instead of a bare
 // `new GLTFLoader().load(...)` — a flaky connection dropping one of these
@@ -1465,14 +1504,37 @@ function applyGLTFMaterialFixes(root) {
 // uses this to hold the loading screen until the real assets for the next
 // level are ready, instead of guessing a fixed delay, so she is never
 // dropped into a scene with something still missing.
+//
+// Derives the compressed sibling file's path from an original model path
+// — e.g. "models/gym.glb" -> "models/gym.compressed.glb". Several of the
+// heavier environment models now have such a sibling (built with
+// gltf-transform: textures resized + converted to WebP, geometry left
+// untouched) sitting right next to the original in the same folder.
+function compressedPathFor(url) {
+  return url.replace(/\.glb$/i, ".compressed.glb");
+}
+
+// `fallbackUrl` (optional) supports the compressed-model setup: several
+// models now have a much smaller WebP-compressed twin (e.g. gym.glb ->
+// gym.compressed.glb) that's loaded first for speed. WebP has been
+// standard/supported in every real mobile+desktop browser for years, so
+// this is expected to always succeed — but on the off chance a browser
+// genuinely can't decode it, GLTFLoader throws a specific "unsupported"
+// parse error every single time for that same file, and retrying it
+// forever would never succeed. Only in that specific case does this
+// switch permanently to `fallbackUrl` (the original, uncompressed file)
+// and keep retrying that instead. A normal network hiccup on the
+// compressed file just keeps retrying the compressed file as usual.
 // ------------------------------------------------------------
 function loadGLBWithRetry(
   url,
   onSuccess,
-  { label, retryDelayMs = 600, maxDelayMs = 4000, attemptTimeoutMs = 12000 } = {}
+  { label, retryDelayMs = 600, maxDelayMs = 4000, attemptTimeoutMs = 12000, fallbackUrl = null } = {}
 ) {
   const niceLabel = label || url;
   let attempt = 0;
+  let currentUrl = url;
+  let fallenBack = false;
 
   return new Promise((resolve) => {
     function attemptLoad() {
@@ -1489,7 +1551,7 @@ function loadGLBWithRetry(
       }, attemptTimeoutMs);
 
       new GLTFLoader().load(
-        url,
+        currentUrl,
         (gltf) => {
           if (settled) return;
           settled = true;
@@ -1508,7 +1570,18 @@ function loadGLBWithRetry(
     }
 
     function handleFailure(err) {
-      console.error(`[loadGLBWithRetry] failed to load ${niceLabel} (attempt ${attempt}):`, err);
+      console.error(`[loadGLBWithRetry] failed to load ${niceLabel} (attempt ${attempt}, url: ${currentUrl}):`, err);
+
+      const isFormatUnsupported = /unsupported/i.test((err && err.message) || "");
+      if (isFormatUnsupported && fallbackUrl && !fallenBack) {
+        fallenBack = true;
+        currentUrl = fallbackUrl;
+        console.warn(`[loadGLBWithRetry] ${niceLabel}: falling back to uncompressed original (${fallbackUrl})`);
+        attempt = 0;
+        setTimeout(attemptLoad, 50);
+        return;
+      }
+
       // Fast, capped backoff with jitter — no visible sign of this to the
       // user, and no upper bound on attempt count. It just quietly keeps
       // trying until it works.
@@ -1540,9 +1613,13 @@ function loadPlayerModel(modelConfig) {
       obj.scale.setScalar(scale);
       obj.position.y = modelConfig.yOffset;
 
-      bobGroup.remove(playerMesh);
+      const oldMesh = playerMesh;
+      bobGroup.remove(oldMesh);
       playerMesh = obj;
       bobGroup.add(playerMesh);
+      // Free the previous outfit's GPU memory now that she's changed —
+      // it's never shown again, so there's no reason to keep holding it.
+      disposeObject3D(oldMesh);
       console.log(
         "[loadPlayerModel] loaded + swapped:",
         modelConfig.glb,
@@ -1708,7 +1785,7 @@ function addGymCoverPanels(obj) {
 
 if (CAFE && CAFE.glb) {
   loadGLBWithRetry(
-    CAFE.glb,
+    compressedPathFor(CAFE.glb),
     (gltf) => {
       const cafeObj = gltf.scene;
       applyGLTFMaterialFixes(cafeObj);
@@ -1741,7 +1818,7 @@ if (CAFE && CAFE.glb) {
       cafeLight.position.set(CAFE.position.x, 4, CAFE.position.z);
       sceneLevel1.add(cafeLight);
     },
-    { label: "the café" }
+    { label: "the café", fallbackUrl: CAFE.glb }
   );
 }
 
@@ -1796,7 +1873,7 @@ function loadLevel2Assets() {
 
   if (GYM && GYM.glb) {
     pending.push(loadGLBWithRetry(
-      GYM.glb,
+      compressedPathFor(GYM.glb),
       (gltf) => {
         const gymObj = gltf.scene;
         applyGLTFMaterialFixes(gymObj);
@@ -1822,7 +1899,7 @@ function loadLevel2Assets() {
         sceneLevel2.add(gymLight);
         registerColliderFromObject(sceneLevel2, gymObj, { excludeNames: GYM.excludeNodeNames || [] });
       },
-      { label: "the gym" }
+      { label: "the gym", fallbackUrl: GYM.glb }
     ));
   }
 
@@ -1937,7 +2014,7 @@ function loadLevel3Assets() {
   }
 
   level3ReadyPromise = loadGLBWithRetry(
-    LOYOLA.glb,
+    compressedPathFor(LOYOLA.glb),
     (gltf) => {
       const loyolaObj = gltf.scene;
       applyGLTFMaterialFixes(loyolaObj);
@@ -1956,7 +2033,7 @@ function loadLevel3Assets() {
       sceneLevel3.add(loyolaLight);
       registerColliderFromObject(sceneLevel3, loyolaObj, { excludeNames: LOYOLA.excludeNodeNames || [] });
     },
-    { label: "the campus" }
+    { label: "the campus", fallbackUrl: LOYOLA.glb }
   );
   return level3ReadyPromise;
 }
@@ -2323,7 +2400,7 @@ function spawnGymEquipment() {
   GYM_EQUIPMENT.items.forEach((item) => {
     if (!item.glb) return;
     loadGLBWithRetry(
-      item.glb,
+      compressedPathFor(item.glb),
       (gltf) => {
         const obj = gltf.scene;
         applyGLTFMaterialFixes(obj);
@@ -2339,7 +2416,7 @@ function spawnGymEquipment() {
         // axis of the model, not a true circular footprint.
         addCollider(sceneLevel2, item.position.x, item.position.z, Math.min(item.targetWidth / 2, 2) * 0.5);
       },
-      { label: item.name || "a piece of equipment" }
+      { label: item.name || "a piece of equipment", fallbackUrl: item.glb }
     );
   });
 }
@@ -3104,9 +3181,16 @@ function runLevelTransition({ label, readyPromise, reveal, onDone, minHoldMs = 2
 // that level's own spawn point/facing instead of carrying position over
 // from the level before — each level is a clean, independent space.
 function switchToScene(nextScene, spawn) {
-  currentScene.remove(player);
+  const leavingScene = currentScene;
+  leavingScene.remove(player);
   nextScene.add(player);
   currentScene = nextScene;
+
+  // Progression is one-way (see disposeObject3D's comment above) — once
+  // she's moved on, the level she just left is never shown again, so free
+  // every GPU resource it was holding (its building model, props, any
+  // collectibles/equipment) instead of letting it sit resident forever.
+  disposeObject3D(leavingScene);
 
   player.position.set(spawn.x, spawn.y, spawn.z);
   player.rotation.y = spawn.rotationY || 0;
